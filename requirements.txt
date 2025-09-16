@@ -1,0 +1,19 @@
+# Core scraping and data handling
+requests
+pandas
+beautifulsoup4
+lxml
+tqdm
+
+# RSS and content extraction
+feedparser
+trafilatura
+readability-lxml
+python-dateutil
+
+# Machine Learning and NLP
+scikit-learn
+torch
+sentence-transformers
+transformers[sentencepiece]
+sacremoses
