@@ -8,6 +8,7 @@ import pandas as pd
 from tqdm import tqdm
 from typing import Tuple, Dict, Any, List
 import concurrent.futures
+from dotenv import load_dotenv
 
 # --- LangChain Imports ---
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -20,7 +21,8 @@ from .merger import merge_and_preprocess_articles
 from .dbscan import cluster_articles_with_dbscan
 
 # --- Configuration ---
-API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
+load_dotenv()  # Load environment variables from .env file
+API_KEY = os.environ.get("GEMINI_API_KEY")
 OUTPUT_DIR = "news_outputs"
 
 # --- Main LangChain Processing Function ---
