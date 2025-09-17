@@ -96,17 +96,21 @@ if __name__ == '__main__':
         # 2. Run the clustering function on the merged data
         clustered_df, unique_df = cluster_articles_with_dbscan(todays_articles_df)
 
-        # 3. Save the final DataFrames to CSV files
+        # 3. Save the final DataFrames to CSV files with timestamp
         print("\n--- [Step 3/3] Saving final CSV files... ---")
-        
-        clustered_filename = os.path.join(OUTPUT_DIR, 'clustered_articles.csv')
-        unique_filename = os.path.join(OUTPUT_DIR, 'unique_articles.csv')
-        
-        clustered_df.to_csv(clustered_filename, index=False, encoding='utf-8')
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        clustered_filename = os.path.join(OUTPUT_DIR, f'clustered_articles_{timestamp}.csv')
+        unique_filename = os.path.join(OUTPUT_DIR, f'unique_articles_{timestamp}.csv')
+
+        # Group clustered articles by cluster_id before saving
+        clustered_df_sorted = clustered_df.sort_values(by=["cluster_id"])
+        clustered_df_sorted.to_csv(clustered_filename, index=False, encoding='utf-8')
         unique_df.to_csv(unique_filename, index=False, encoding='utf-8')
-        
+
         print(f"✅ Clustered articles saved to: {clustered_filename}")
         print(f"✅ Unique articles saved to: {unique_filename}")
-        
+
     else:
         print("\n--- Pipeline finished: No articles found to process. ---")
