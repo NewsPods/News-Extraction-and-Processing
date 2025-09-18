@@ -13,8 +13,11 @@ from dotenv import load_dotenv
 # --- LangChain Imports ---
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.runnables import Runnable
+
+# --- Pydantic Imports ---
+from pydantic import BaseModel, Field
 
 # --- Import functions from your other modules ---
 from .merger import merge_and_preprocess_articles
@@ -24,6 +27,12 @@ from .dbscan import cluster_articles_with_dbscan
 load_dotenv()  # Load environment variables from .env file
 API_KEY = os.environ.get("GEMINI_API_KEY")
 OUTPUT_DIR = "news_outputs"
+
+# --- Pydantic Model for Output Structure ---
+class SynthesizedArticle(BaseModel):
+    """Model for the synthesized article output."""
+    title: str = Field(description="The best, most clear and engaging title from the source articles")
+    summary: str = Field(description="A comprehensive, well-structured news article that synthesizes all source content")
 
 # --- Main LangChain Processing Function ---
 def _process_cluster_langchain(cluster_df: pd.DataFrame, chain: Runnable) -> List[Dict[str, Any]]:
@@ -35,10 +44,10 @@ def _process_cluster_langchain(cluster_df: pd.DataFrame, chain: Runnable) -> Lis
             combined_text += f"Title: {row['title']}\n"
             combined_text += f"Content: {row['content']}\n\n"
 
-        response_text = chain.invoke({"articles_text": combined_text})
+        response: SynthesizedArticle = chain.invoke({"articles_text": combined_text})
         
-        new_title = response_text.split("TITLE:")[1].split("SUMMARY:")[0].strip()
-        new_summary = response_text.split("SUMMARY:")[1].strip()
+        new_title = response.title
+        new_summary = response.summary
 
     except Exception as e:
         cluster_id = cluster_df['cluster_id'].iloc[0]
@@ -64,7 +73,10 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
     if clustered_df.empty:
         return unique_df
 
-    # --- Set up the NEW, Advanced LangChain Prompt ---
+    # --- Set up Pydantic Output Parser ---
+    output_parser = PydanticOutputParser(pydantic_object=SynthesizedArticle)
+
+    # --- Set up the NEW, Advanced LangChain Prompt with Pydantic Format Instructions ---
     prompt_template = ChatPromptTemplate.from_template(
         """
         You are a professional news editor for a major international news agency.
@@ -80,21 +92,21 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
             - Do not include any meta-commentary like "This article combines..."
             - The output must be a single, clean piece of journalism.
 
-        **Output Format:**
-        Format your response EXACTLY as follows, with no extra text before or after:
-        TITLE: [The best title you selected]
-        SUMMARY: [Your new, comprehensive summary article]
-
         **Source Articles to Synthesize:**
         {articles_text}
+
+        {format_instructions}
         """
     )
+    
+    # Create the prompt with format instructions
+    formatted_prompt = prompt_template.partial(format_instructions=output_parser.get_format_instructions())
+    
     model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=API_KEY)
-    output_parser = StrOutputParser()
-    chain = prompt_template | model | output_parser
+    chain = formatted_prompt | model | output_parser
 
     # --- Process Clusters in Parallel ---
-    print("\n--- [Step 3/4] Synthesizing clustered articles with Advanced Prompt... ---")
+    print("\n--- [Step 3/4] Synthesizing clustered articles with Advanced Pydantic Parser... ---")
     final_article_list = []
     cluster_groups = [group for _, group in clustered_df.groupby('cluster_id')]
     
