@@ -20,5 +20,6 @@ sacremoses
 
 # For final_news_df.py (LangChain & API Keys)
 langchain-google-genai
+langchain-groq
 python-dotenv
 pydantic

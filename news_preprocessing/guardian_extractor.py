@@ -128,7 +128,7 @@ def scrape_guardian_world_news() -> pd.DataFrame:
     rss_resp.raise_for_status()
     parsed = feedparser.parse(rss_resp.content)
 
-    topic = (getattr(parsed, "feed", {}).get("title") or "World").replace(" | The Guardian", "").strip()
+    topic = (getattr(parsed, "feed", {}).get("title") or "World").replace(" | The Guardian", "").replace("World news", "World").strip()
     entries = list(getattr(parsed, "entries", []))[:MAX_ARTICLES_PER_FEED]
 
     rows = []
