@@ -44,11 +44,11 @@ logger = logging.getLogger(__name__)
 class SynthesizedArticle(BaseModel):
     """Model for the synthesized article output with validation."""
     title: str = Field(description="The best, most engaging title from the source articles")
-    summary: str = Field(description=f"A comprehensive news summary of max {MAX_SUMMARY_WORDS} words, synthesizing all source content", min_length=MIN_CONTENT_LENGTH, max_length=3000)
+    summary: str = Field(description=f"A comprehensive news summary of max {MAX_SUMMARY_WORDS} words, synthesizing all source content", min_length=MIN_CONTENT_LENGTH, max_length=6000)
 
 class SummarizedArticle(BaseModel):
     """Model for the summarized unique article output with validation."""
-    summary: str = Field(description=f"A concise news summary of max {MAX_SUMMARY_WORDS} words, capturing the article's key facts", min_length=MIN_CONTENT_LENGTH, max_length=3000)
+    summary: str = Field(description=f"A concise news summary of max {MAX_SUMMARY_WORDS} words, capturing the article's key facts", min_length=MIN_CONTENT_LENGTH, max_length=6000)
 
 # --- Retry Decorator ---
 def retry_on_failure(max_retries: int = MAX_RETRIES, delay: int = RETRY_DELAY):
@@ -78,7 +78,7 @@ def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> List[Dict[str
         raise ValueError("Empty cluster provided")
     
     # Process full content length to handle longer articles
-    max_content_per_article = 4000  # Increased to handle longer articles
+    max_content_per_article = 6000  # Increased to handle longer articles
     combined_text = "\n\n".join(
         f"--- Article from {row['source']} ---\n"
         f"Title: {row['title']}\n"
