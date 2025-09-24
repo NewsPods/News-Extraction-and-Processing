@@ -23,3 +23,8 @@ langchain-google-genai
 langchain-groq
 python-dotenv
 pydantic
+
+# For article_pusher.py (Database Connection)
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+sqlalchemy-cockroachdb>=2.0
