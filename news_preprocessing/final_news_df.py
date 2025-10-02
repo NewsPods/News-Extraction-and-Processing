@@ -2,6 +2,7 @@
 Takes clustered and unique articles, then uses advanced LangChain chains with
 Pydantic parsing to synthesize clusters and summarize unique articles, creating
 a final, consistently formatted dataset.
+MODIFIED: Returns topics as lists for proper database normalization.
 """
 import os
 import pandas as pd
@@ -30,9 +31,9 @@ from .dbscan import cluster_articles_with_dbscan
 load_dotenv()
 API_KEY = os.environ.get("GROQ_API_KEY")
 OUTPUT_DIR = "news_outputs"
-MAX_LLM_WORKERS = 5  # Reduced further for Groq rate limits
+MAX_LLM_WORKERS = 5
 MAX_RETRIES = 3
-RETRY_DELAY = 2  # Increased delay for Groq API
+RETRY_DELAY = 2
 MAX_SUMMARY_WORDS = 200
 MIN_CONTENT_LENGTH = 50
 
@@ -69,16 +70,17 @@ def retry_on_failure(max_retries: int = MAX_RETRIES, delay: int = RETRY_DELAY):
         return wrapper
     return decorator
 
-# --- Enhanced Processing Functions ---
+# --- MODIFIED Processing Functions ---
 @retry_on_failure()
-def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> List[Dict[str, Any]]:
-    """Synthesizes a single cluster of articles with retry logic."""
-    # Validate input
+def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> Dict[str, Any]:
+    """
+    Synthesizes a single cluster of articles with retry logic.
+    MODIFIED: Returns a single dict with topic as a list.
+    """
     if cluster_df.empty:
         raise ValueError("Empty cluster provided")
     
-    # Process full content length to handle longer articles
-    max_content_per_article = 6000  # Increased to handle longer articles
+    max_content_per_article = 6000
     combined_text = "\n\n".join(
         f"--- Article from {row['source']} ---\n"
         f"Title: {row['title']}\n"
@@ -88,29 +90,32 @@ def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> List[Dict[str
     
     response: SynthesizedArticle = chain.invoke({"articles_text": combined_text})
     
+    # MODIFICATION: Store all unique topics in a list
     unique_topics = cluster_df['topic'].unique().tolist()
     published_date = cluster_df['published_date'].min()
     
-    return [{
+    # MODIFICATION: Return single dict with topics as list
+    return {
         'source': 'Multiple', 
-        'topic': topic, 
+        'topic': unique_topics,  # List of topics
         'title': response.title,
         'published_date': published_date, 
         'link': cluster_df.iloc[0]['link'],
         'content': response.summary,
         'word_count': len(response.summary.split()),
         'article_count': len(cluster_df)
-    } for topic in unique_topics]
+    }
 
 @retry_on_failure()
 def _process_unique_article(article_row: pd.Series, chain: Runnable) -> Dict[str, Any]:
-    """Summarizes a single unique article with retry logic."""
-    # Validate input
+    """
+    Summarizes a single unique article with retry logic.
+    MODIFIED: Ensures topic is returned as a list.
+    """
     if pd.isna(article_row['content']) or len(article_row['content'].strip()) < MIN_CONTENT_LENGTH:
         raise ValueError("Article content is too short or empty")
     
-    # Handle full content length for longer articles
-    max_content = 4000  # Increased to handle longer articles
+    max_content = 4000
     content = article_row['content'][:max_content]
     if len(article_row['content']) > max_content:
         content += "..."
@@ -119,9 +124,13 @@ def _process_unique_article(article_row: pd.Series, chain: Runnable) -> Dict[str
     
     result = article_row.to_dict()
     result['content'] = response.summary
-    # Keep the original source unchanged
     result['word_count'] = len(response.summary.split())
     result['original_length'] = len(article_row['content'])
+    
+    # MODIFICATION: Ensure topic is a list
+    if 'topic' in result:
+        if not isinstance(result['topic'], list):
+            result['topic'] = [result['topic']]
     
     return result
 
@@ -129,12 +138,16 @@ def _handle_processing_failure(item_info: str, error: Exception, original_data: 
     """Centralized error handling for processing failures."""
     logger.error(f"Failed to process {item_info}: {error}")
     if isinstance(original_data, pd.DataFrame):
-        result = original_data.to_dict('records')
-        for record in result:
-            record['source'] = 'Original (Failed Processing)'
+        # For clusters, aggregate topics
+        unique_topics = original_data['topic'].unique().tolist()
+        result = original_data.iloc[0].to_dict()
+        result['topic'] = unique_topics
+        result['source'] = 'Original (Failed Processing)'
         return result
     else:
         result = original_data.to_dict() if hasattr(original_data, 'to_dict') else original_data
+        if 'topic' in result and not isinstance(result['topic'], list):
+            result['topic'] = [result['topic']]
         result['source'] = 'Original (Failed Processing)'
         return result
 
@@ -142,10 +155,9 @@ def _handle_processing_failure(item_info: str, error: Exception, original_data: 
 def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Generates a final DataFrame by synthesizing clusters and summarizing unique articles.
-    Returns both the DataFrame and processing statistics.
+    MODIFIED: Returns DataFrame with 'topic' column containing lists.
     """
     
-    # Validate inputs
     if clustered_df.empty and unique_df.empty:
         logger.warning("No articles to process")
         return pd.DataFrame(), {}
@@ -184,7 +196,7 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
         You are a professional news editor. Rewrite the following news article into a concise, engaging summary.
 
         **Instructions:**
-        1. Capture the most crucial facts, details, and context.
+        1. Capture all the crucial facts, details, and context. Do not leave out any facts, details, context or quotes.
         2. Maintain a professional, objective, and journalistic style.
         3. **The final summary MUST be exactly {max_words} words or fewer.**
         4. Preserve important quotes and specific details.
@@ -203,11 +215,10 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
         """
     )
     
-    # Initialize Groq model with Llama 3.1-8B-Instant
     model = ChatGroq(
         model="llama-3.1-8b-instant",
         groq_api_key=API_KEY,
-        temperature=0.3,  # Lower temperature for more consistent output
+        temperature=0.3,
     )
     
     synthesis_chain = synthesis_prompt.partial(
@@ -220,7 +231,7 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
         max_words=MAX_SUMMARY_WORDS
     ) | model | summary_parser
 
-    # --- 2. Process all articles with comprehensive tracking ---
+    # --- 2. Process all articles ---
     final_article_list = []
     stats = {
         'total_clusters': len(clustered_df.groupby('cluster_id')) if not clustered_df.empty else 0,
@@ -255,27 +266,24 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
         for item_type, future, original_data in tqdm(futures, desc="Processing Articles"):
             try:
                 result = future.result()
-                if isinstance(result, list):
-                    final_article_list.extend(result)
-                    if item_type == 'cluster':
-                        stats['successful_synthesis'] += 1
+                final_article_list.append(result)
+                
+                if item_type == 'cluster':
+                    stats['successful_synthesis'] += 1
                 else:
-                    final_article_list.append(result)
-                    if item_type == 'unique':
-                        stats['successful_summary'] += 1
+                    stats['successful_summary'] += 1
                         
             except Exception as e:
-                # Handle failures gracefully
                 if item_type == 'cluster':
                     cluster_id = original_data['cluster_id'].iloc[0]
                     fallback = _handle_processing_failure(f"Cluster ID {cluster_id}", e, original_data)
-                    final_article_list.extend(fallback)
                     stats['failed_synthesis'] += 1
                 else:
                     title = original_data.get('title', 'Unknown')
                     fallback = _handle_processing_failure(f"Article: {title}", e, original_data)
-                    final_article_list.append(fallback)
                     stats['failed_summary'] += 1
+                
+                final_article_list.append(fallback)
 
     stats['processing_time'] = time.time() - start_time
 
@@ -287,20 +295,17 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
     final_df = pd.DataFrame(final_article_list)
     final_columns = ['source', 'topic', 'title', 'published_date', 'link', 'content', 'word_count']
     
-    # Add optional columns if they exist
     optional_columns = ['article_count', 'original_length']
     for col in optional_columns:
         if col in final_df.columns:
             final_columns.append(col)
     
     final_df = final_df.reindex(columns=final_columns)
-    
-    # Remove any completely empty rows
     final_df = final_df.dropna(subset=['title', 'content'])
     
     return final_df, stats
 
-# --- Enhanced Main Execution Block ---
+# --- Main Execution Block ---
 if __name__ == '__main__':
     try:
         print("--- [Step 1/4] Fetching and merging articles... ---")
@@ -321,7 +326,6 @@ if __name__ == '__main__':
             final_filename = os.path.join(OUTPUT_DIR, 'final_summarized_news.csv')
             final_df.to_csv(final_filename, index=False, encoding='utf-8')
             
-            # Print comprehensive statistics
             print(f"\n✅ Pipeline complete! Final summarized news saved to: {final_filename}")
             print(f"\n📊 Processing Statistics:")
             print(f"  • Total articles processed: {len(final_df)}")
