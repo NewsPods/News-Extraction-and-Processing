@@ -3,7 +3,8 @@ Main orchestrator to fetch articles from multiple sources, merge them,
 and perform final preprocessing and cleaning.
 """
 import pandas as pd
-from datetime import datetime, date
+# No longer need 'datetime' or 'date' as pandas handles this robustly
+# from datetime import datetime, date
 
 # --- Import scraper functions from other modules in the package ---
 # The '.' tells Python to look for these files in the same directory (news_preprocessing)
@@ -19,7 +20,8 @@ def merge_and_preprocess_articles(filter_today: bool = True) -> pd.DataFrame:
 
     Args:
         filter_today (bool): If True, filters the final DataFrame to only
-                             include articles published today. Defaults to True.
+                             include articles published within the current
+                             local day (IST). Defaults to True.
 
     Returns:
         pd.DataFrame: A clean, merged DataFrame of news articles.
@@ -43,8 +45,8 @@ def merge_and_preprocess_articles(filter_today: bool = True) -> pd.DataFrame:
     # --- 2. Harmonize and Merge ---
     print("\n[Step 2/4] Harmonizing and merging DataFrames...")
     try:
-        # Add a source column to each before merging
-        # This is now handled within each scraper, but we can ensure it's there
+        # Note: It's best practice for each scraper to add its own 'source' column.
+        # This code provides a fallback for robustness.
         if 'source' not in df_db.columns and not df_db.empty: df_db['source'] = 'Dainik Bhaskar'
         if 'source' not in df_toi.columns and not df_toi.empty: df_toi['source'] = 'Times of India'
         if 'source' not in df_guardian.columns and not df_guardian.empty: df_guardian['source'] = 'The Guardian'
@@ -64,25 +66,40 @@ def merge_and_preprocess_articles(filter_today: bool = True) -> pd.DataFrame:
         return pd.DataFrame()
 
     # --- 3. Standardize Date Column ---
-    print("\n[Step 3/4] Standardizing 'published_date' column...")
+    print("\n[Step 3/4] Standardizing 'published_date' column to UTC...")
+    # --- MODIFICATION START ---
+    # Convert all date strings to timezone-aware UTC timestamps.
+    # We REMOVE .dt.normalize() to keep the precise time, which is crucial for the filter.
     merged_df['published_date'] = pd.to_datetime(
         merged_df['published_date'],
         format='mixed',
         errors='coerce',
-        utc=True
-    ).dt.normalize()
+        utc=True 
+    )
+    # --- MODIFICATION END ---
     
     # Drop rows where date could not be parsed
     merged_df.dropna(subset=['published_date'], inplace=True)
     
     # --- 4. Filter for Today's Articles (Optional) ---
     if filter_today:
-        print("\n[Step 4/4] Filtering for today's articles...")
-        today = pd.to_datetime(date.today()).tz_localize('UTC')
+        # --- MODIFICATION START: Timezone-aware filtering ---
+        print("\n[Step 4/4] Filtering for articles in today's IST window...")
         original_count = len(merged_df)
+
+        # Define "today" as the 24-hour period from midnight to midnight in India.
+        today_in_india = pd.Timestamp.now(tz='Asia/Kolkata').normalize()
+        tomorrow_in_india = today_in_india + pd.Timedelta(days=1)
         
-        merged_df = merged_df[merged_df['published_date'] == today].reset_index(drop=True)
-        print(f"- Kept {len(merged_df)} articles out of {original_count} published today.")
+        # Filter the UTC dates to find all articles that fall within our IST day.
+        # Pandas handles the timezone comparison automatically.
+        merged_df = merged_df[
+            (merged_df['published_date'] >= today_in_india) &
+            (merged_df['published_date'] < tomorrow_in_india)
+        ].reset_index(drop=True)
+
+        print(f"- Kept {len(merged_df)} articles out of {original_count} that were published on your 'today'.")
+        # --- MODIFICATION END ---
     else:
         print("\n[Step 4/4] Skipping filter for today's articles.")
 
@@ -100,7 +117,8 @@ if __name__ == '__main__':
     if not final_df.empty:
         print("\n--- Final Merged DataFrame ---")
         print("Sample of final data:")
-        display(final_df.sample(5))
+        # Use print() instead of display() for compatibility with standard Python scripts
+        print(final_df.sample(min(5, len(final_df))))
         
         print("\nArticle count by source:")
         print(final_df['source'].value_counts())
