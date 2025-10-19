@@ -17,6 +17,7 @@ torch
 sentence-transformers
 transformers[sentencepiece]
 sacremoses
+numpy
 
 # For final_news_df.py (LangChain & API Keys)
 langchain-google-genai
@@ -28,3 +29,8 @@ pydantic
 SQLAlchemy>=2.0
 psycopg2-binary>=2.9
 sqlalchemy-cockroachdb>=2.0
+
+# For apis.py (API Server and Search)
+fastapi
+uvicorn[standard]
+rank-bm25

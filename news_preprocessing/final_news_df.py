@@ -31,7 +31,7 @@ from .dbscan import cluster_articles_with_dbscan
 load_dotenv()
 API_KEY = os.environ.get("GROQ_API_KEY")
 OUTPUT_DIR = "news_outputs"
-MAX_LLM_WORKERS = 5
+MAX_LLM_WORKERS = 3
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 MAX_SUMMARY_WORDS = 200
@@ -167,29 +167,36 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
     summary_parser = PydanticOutputParser(pydantic_object=SummarizedArticle)
 
     synthesis_prompt = ChatPromptTemplate.from_template(
-        """
-        You are a professional news editor. Synthesize a single, high-quality news article from the following collection of articles about the same event.
+    """
+    You are a professional news editor. Synthesize a single, high-quality news article from the following collection of articles about the same event.
 
-        **Instructions:**
-        1. Select the best, most engaging title from the provided articles.
-        2. Write a comprehensive narrative integrating all crucial facts, quotes, and perspectives from all sources.
-        3. Maintain a professional, objective, and engaging journalistic style.
-        4. **The final summary MUST be exactly {max_words} words or fewer.**
-        5. Ensure proper flow and readability - no abrupt sentences or formatting artifacts.
-        6. Focus on the most newsworthy and important information.
+    **CRITICAL INSTRUCTION:**
+    The title you select MUST accurately represent the content you synthesize. DO NOT pick a title from one article and then write content about a different article. The title and content must match and be about the SAME topic.
 
-        **Key Requirements:**
-        - Professional journalism style
-        - Maximum {max_words} words
-        - Include key facts, quotes, and context
-        - No meta-commentary about synthesis
+    **Instructions:**
+    1. Identify the MAIN topic/event that all these articles are about.
+    2. Select the best, most engaging title that represents THIS MAIN TOPIC.
+    3. Write a comprehensive narrative integrating all crucial facts, quotes, and perspectives from all sources about THIS SAME TOPIC.
+    4. Maintain a professional, objective, and engaging journalistic style.
+    5. **The final summary MUST be exactly {max_words} words or fewer.**
+    6. Ensure proper flow and readability - no abrupt sentences or formatting artifacts.
+    
+    **VALIDATION CHECK:**
+    Before finalizing, ask yourself: "Does my chosen title accurately describe the content I wrote?" If not, either change the title or rewrite the content.
 
-        {format_instructions}
+    **Key Requirements:**
+    - Title and content MUST be about the same topic
+    - Professional journalism style
+    - Maximum {max_words} words
+    - Include key facts, quotes, and context
+    - No meta-commentary about synthesis
 
-        **Source Articles:**
-        {articles_text}
-        """
-    )
+    {format_instructions}
+
+    **Source Articles:**
+    {articles_text}
+    """
+)
     
     summary_prompt = ChatPromptTemplate.from_template(
         """
