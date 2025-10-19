@@ -1,7 +1,7 @@
 """
 Connects to CockroachDB and pushes processed news articles, including their
 vector embeddings, into a normalized two-table schema.
-MODIFIED: Enhanced data integrity with proper alignment validation and error handling.
+
 """
 import os
 import pandas as pd

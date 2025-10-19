@@ -2,7 +2,7 @@
 Takes clustered and unique articles, then uses advanced LangChain chains with
 Pydantic parsing to synthesize clusters and summarize unique articles, creating
 a final, consistently formatted dataset.
-MODIFIED: Returns topics as lists for proper database normalization.
+
 """
 import os
 import pandas as pd
@@ -75,7 +75,7 @@ def retry_on_failure(max_retries: int = MAX_RETRIES, delay: int = RETRY_DELAY):
 def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> Dict[str, Any]:
     """
     Synthesizes a single cluster of articles with retry logic.
-    MODIFIED: Returns a single dict with topic as a list.
+    MODIFIED: Returns a single dict with topic as a list and cleans whitespace.
     """
     if cluster_df.empty:
         raise ValueError("Empty cluster provided")
@@ -90,6 +90,9 @@ def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> Dict[str, Any
     
     response: SynthesizedArticle = chain.invoke({"articles_text": combined_text})
     
+    # ADDED: Clean up excessive whitespace and newlines
+    cleaned_summary = ' '.join(response.summary.split())
+    
     # MODIFICATION: Store all unique topics in a list
     unique_topics = cluster_df['topic'].unique().tolist()
     published_date = cluster_df['published_date'].min()
@@ -101,8 +104,8 @@ def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> Dict[str, Any
         'title': response.title,
         'published_date': published_date, 
         'link': cluster_df.iloc[0]['link'],
-        'content': response.summary,
-        'word_count': len(response.summary.split()),
+        'content': cleaned_summary,  # Use cleaned version
+        'word_count': len(cleaned_summary.split()),
         'article_count': len(cluster_df)
     }
 
@@ -110,7 +113,7 @@ def _process_cluster(cluster_df: pd.DataFrame, chain: Runnable) -> Dict[str, Any
 def _process_unique_article(article_row: pd.Series, chain: Runnable) -> Dict[str, Any]:
     """
     Summarizes a single unique article with retry logic.
-    MODIFIED: Ensures topic is returned as a list.
+    MODIFIED: Ensures topic is returned as a list and cleans whitespace.
     """
     if pd.isna(article_row['content']) or len(article_row['content'].strip()) < MIN_CONTENT_LENGTH:
         raise ValueError("Article content is too short or empty")
@@ -122,9 +125,12 @@ def _process_unique_article(article_row: pd.Series, chain: Runnable) -> Dict[str
     
     response: SummarizedArticle = chain.invoke({"article_text": content})
     
+    # ADDED: Clean up excessive whitespace and newlines
+    cleaned_summary = ' '.join(response.summary.split())
+    
     result = article_row.to_dict()
-    result['content'] = response.summary
-    result['word_count'] = len(response.summary.split())
+    result['content'] = cleaned_summary  # Use cleaned version
+    result['word_count'] = len(cleaned_summary.split())
     result['original_length'] = len(article_row['content'])
     
     # MODIFICATION: Ensure topic is a list
