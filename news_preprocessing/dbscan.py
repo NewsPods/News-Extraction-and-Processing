@@ -34,7 +34,7 @@ def _get_best_device() -> str:
 # --- Main Clustering Function ---
 def cluster_articles_with_dbscan(
     df: pd.DataFrame,
-    eps: float = 0.35,
+    eps: float = 0.325,
     min_samples: int = 2
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
