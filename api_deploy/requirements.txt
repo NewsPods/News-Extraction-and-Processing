@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+rank-bm25
+sentence-transformers
+scikit-learn
+numpy
+python-dotenv
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+sqlalchemy-cockroachdb>=2.0
