@@ -23,6 +23,9 @@ from langchain_core.runnables import Runnable
 # --- Pydantic Imports ---
 from pydantic import BaseModel, Field, validator
 
+# --- Sentence Transformers for Embeddings ---
+from sentence_transformers import SentenceTransformer
+
 # --- Import functions from your other modules ---
 from .merger import merge_and_preprocess_articles
 from .dbscan import cluster_articles_with_dbscan
@@ -36,6 +39,9 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2
 MAX_SUMMARY_WORDS = 200
 MIN_CONTENT_LENGTH = 50
+
+# --- Embedding Model for Database Storage ---
+EMBEDDING_MODEL = SentenceTransformer('all-mpnet-base-v2')
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -246,6 +252,8 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
 
     # --- 2. Process all articles ---
     final_article_list = []
+    failed_items_to_retry = []  # Store failed items for retry
+    
     stats = {
         'total_clusters': len(clustered_df.groupby('cluster_id')) if not clustered_df.empty else 0,
         'total_unique': len(unique_df) if not unique_df.empty else 0,
@@ -253,6 +261,8 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
         'failed_synthesis': 0,
         'successful_summary': 0,
         'failed_summary': 0,
+        'retry_successful': 0,
+        'permanently_failed': 0,
         'processing_time': 0
     }
     
@@ -287,16 +297,52 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
                     stats['successful_summary'] += 1
                         
             except Exception as e:
+                # Store failed items for retry instead of using fallback immediately
+                logger.warning(f"Initial processing failed for {item_type}: {e}")
+                failed_items_to_retry.append((item_type, original_data))
+                
                 if item_type == 'cluster':
-                    cluster_id = original_data['cluster_id'].iloc[0]
-                    fallback = _handle_processing_failure(f"Cluster ID {cluster_id}", e, original_data)
                     stats['failed_synthesis'] += 1
                 else:
-                    title = original_data.get('title', 'Unknown')
-                    fallback = _handle_processing_failure(f"Article: {title}", e, original_data)
                     stats['failed_summary'] += 1
-                
-                final_article_list.append(fallback)
+
+    # --- 2.5. RETRY LOGIC: Attempt to process failed articles again (2 attempts) ---
+    if failed_items_to_retry:
+        print(f"\n⚠️ Retrying {len(failed_items_to_retry)} failed items (2 attempts per item)...")
+        
+        for item_type, original_data in tqdm(failed_items_to_retry, desc="Retrying Failed Items"):
+            success = False
+            last_error = None
+            
+            # Determine which chain to use
+            chain = synthesis_chain if item_type == 'cluster' else summary_chain
+            process_func = _process_cluster if item_type == 'cluster' else _process_unique_article
+            
+            # Try 2 more times
+            for retry_attempt in range(2):
+                try:
+                    time.sleep(1)  # Small delay between retries
+                    result = process_func(original_data, chain)
+                    final_article_list.append(result)
+                    success = True
+                    stats['retry_successful'] += 1
+                    logger.info(f"✓ Retry attempt {retry_attempt + 1} succeeded for {item_type}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Retry attempt {retry_attempt + 1} failed: {e}")
+                    time.sleep(2)  # Longer delay before next retry
+            
+            # If still failed after retries, exclude it
+            if not success:
+                stats['permanently_failed'] += 1
+                if item_type == 'cluster':
+                    cluster_id = original_data['cluster_id'].iloc[0] if isinstance(original_data, pd.DataFrame) else 'Unknown'
+                    logger.error(f"❌ Permanently excluding Cluster ID {cluster_id} after 2 retry attempts. Last error: {last_error}")
+                else:
+                    title = original_data.get('title', 'Unknown') if isinstance(original_data, dict) else original_data['title']
+                    logger.error(f"❌ Permanently excluding article '{title[:50]}...' after 2 retry attempts. Last error: {last_error}")
+
 
     stats['processing_time'] = time.time() - start_time
 
@@ -316,6 +362,29 @@ def generate_final_news_df_langchain(clustered_df: pd.DataFrame, unique_df: pd.D
     final_df = final_df.reindex(columns=final_columns)
     final_df = final_df.dropna(subset=['title', 'content'])
     
+    # --- 4. Generate embeddings for database storage ---
+    if not final_df.empty:
+        logger.info("Generating embeddings for database storage...")
+        texts_for_embedding = (final_df['title'].fillna('') + ". " + final_df['content'].fillna('')).tolist()
+        
+        embeddings = EMBEDDING_MODEL.encode(
+            texts_for_embedding,
+            show_progress_bar=True,
+            batch_size=32
+        )
+        final_df['embedding'] = [emb.tolist() for emb in embeddings]
+        logger.info(f"✅ Generated embeddings for {len(final_df)} articles")
+    
+    # --- 5. Rename columns to match database schema ---
+    final_df.rename(columns={
+        'content': 'description',
+        'source': 'news_source',
+        'published_date': 'created_at'
+    }, inplace=True)
+    
+    # Ensure datetime format for database
+    final_df['created_at'] = pd.to_datetime(final_df['created_at'], errors='coerce')
+    
     return final_df, stats
 
 # --- Main Execution Block ---
@@ -334,23 +403,38 @@ if __name__ == '__main__':
             
             final_df, processing_stats = generate_final_news_df_langchain(clustered_df, unique_df)
             
-            print("\n--- [Step 4/4] Saving final consolidated news file... ---")
+            print("\n--- [Step 4/4] Saving final database-ready file... ---")
             os.makedirs(OUTPUT_DIR, exist_ok=True)
-            final_filename = os.path.join(OUTPUT_DIR, 'final_summarized_news.csv')
+            
+            # Add timestamp to filename
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            final_filename = os.path.join(OUTPUT_DIR, f'final_news_database_ready_{timestamp}.csv')
+            
             final_df.to_csv(final_filename, index=False, encoding='utf-8')
             
-            print(f"\n✅ Pipeline complete! Final summarized news saved to: {final_filename}")
+            print(f"\n✅ Pipeline complete! Database-ready news saved to: {final_filename}")
             print(f"\n📊 Processing Statistics:")
             print(f"  • Total articles processed: {len(final_df)}")
             print(f"  • Successful syntheses: {processing_stats['successful_synthesis']}")
-            print(f"  • Failed syntheses: {processing_stats['failed_synthesis']}")
+            print(f"  • Failed syntheses (initial): {processing_stats['failed_synthesis']}")
             print(f"  • Successful summaries: {processing_stats['successful_summary']}")
-            print(f"  • Failed summaries: {processing_stats['failed_summary']}")
+            print(f"  • Failed summaries (initial): {processing_stats['failed_summary']}")
+            print(f"  • Retry successful: {processing_stats['retry_successful']}")
+            print(f"  • Permanently excluded: {processing_stats['permanently_failed']}")
             print(f"  • Processing time: {processing_stats['processing_time']:.2f} seconds")
             
             if len(final_df) > 0:
                 avg_words = final_df['word_count'].mean() if 'word_count' in final_df.columns else 0
                 print(f"  • Average summary length: {avg_words:.1f} words")
+                print(f"  • Embeddings generated: {'Yes' if 'embedding' in final_df.columns else 'No'}")
+            
+            if processing_stats['permanently_failed'] > 0:
+                print(f"\n⚠️ Note: {processing_stats['permanently_failed']} article(s) were excluded after failing 2 retry attempts.")
+                print(f"   These articles could not be processed by the LLM and have been removed from the dataset.")
+                
+            print(f"\n💾 CSV columns: {list(final_df.columns)}")
+            print(f"   Ready for direct database insertion!")
         else:
             print("\n--- Pipeline finished: No articles found to process. ---")
             

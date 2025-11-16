@@ -1,14 +1,13 @@
 """
-Connects to CockroachDB and pushes processed news articles, including their
-vector embeddings, into a normalized two-table schema.
-
+Connects to CockroachDB and pushes processed news articles with embeddings.
+This module ONLY handles database insertion - all data transformations 
+are done in final_news_df.py.
 """
 import os
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 from typing import List, Tuple
 
@@ -20,13 +19,17 @@ from .final_news_df import generate_final_news_df_langchain
 # --- Configuration ---
 load_dotenv()
 CONN_STRING = os.environ.get("COCKROACHDB_CONN_STRING")
-# Use the more powerful model for the final embeddings stored in the DB
-EMBEDDING_MODEL = SentenceTransformer('all-mpnet-base-v2')
 
 def push_articles_to_db(df: pd.DataFrame):
     """
-    Generates embeddings, then pushes the DataFrame to the database.
-    MODIFIED: Uses tuple-based pairing to maintain data integrity.
+    Pushes the processed DataFrame (with embeddings) to the database.
+    
+    IMPORTANT: Expects the DataFrame to already have:
+    - 'embedding' column with vector embeddings
+    - Database-ready column names ('description', 'news_source', 'created_at')
+    - 'topic' as a list of topics
+    
+    All data transformations should be done in final_news_df.py before calling this.
     """
     if df.empty:
         print("Input DataFrame is empty. Nothing to push.")
@@ -35,45 +38,36 @@ def push_articles_to_db(df: pd.DataFrame):
         print("❌ Error: COCKROACHDB_CONN_STRING not set.")
         return
 
-    print(f"\n--- [Step 4/5] Preparing to push {len(df)} articles to CockroachDB ---")
+    print(f"\n--- [Step 5/5] Pushing {len(df)} articles to CockroachDB ---")
+    
+    # Validate that the DataFrame has the expected columns
+    required_columns = ['title', 'description', 'news_source', 'created_at', 'embedding', 'topic']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        print(f"❌ Error: DataFrame is missing required columns: {missing_columns}")
+        print(f"   Available columns: {list(df.columns)}")
+        print(f"   Make sure final_news_df.py has generated embeddings and renamed columns.")
+        return
 
     try:
-        # --- 1. Generate embeddings for the final content ---
-        print("Generating final embeddings for database storage...")
-        # We embed the final, summarized content for the best search results
-        texts_for_embedding = (df['title'].fillna('') + ". " + df['content'].fillna('')).tolist()
-        
-        embeddings = EMBEDDING_MODEL.encode(
-            texts_for_embedding,
-            show_progress_bar=True,
-            batch_size=32
-        )
-        df['embedding'] = [emb.tolist() for emb in embeddings]
-
-        # --- 2. Prepare and Insert Data ---
+        # --- Connect and Insert Data ---
         engine = create_engine(CONN_STRING, poolclass=NullPool)
         
         with engine.begin() as connection:  # Transaction with automatic rollback on error
-            print("Preparing and inserting data...")
-            articles_df = df.copy()
-            articles_df.rename(columns={
-                'content': 'description', 'source': 'news_source',
-                'published_date': 'created_at'
-            }, inplace=True)
-            articles_df['created_at'] = pd.to_datetime(articles_df['created_at'], errors='coerce')
-
+            print("Inserting articles into database...")
+            
             insert_query = text("""
                 INSERT INTO public.articles (title, description, news_source, created_at, embedding)
                 VALUES (:title, :description, :news_source, :created_at, :embedding)
                 RETURNING article_id
             """)
 
-            # CRITICAL FIX: Store article_id and topics as coupled tuples
+            # Store article_id and topics as coupled tuples to maintain data integrity
             article_topic_pairs: List[Tuple[int, any]] = []
             
             try:
-                # Iterate through DataFrame rows in order to maintain alignment
-                for idx, row in tqdm(articles_df.iterrows(), total=len(articles_df), desc="Inserting Articles"):
+                # Iterate through DataFrame rows to maintain alignment
+                for idx, row in tqdm(df.iterrows(), total=len(df), desc="Inserting Articles"):
                     # Validate row data before insertion
                     if pd.isna(row['title']) or pd.isna(row['description']):
                         print(f"⚠️ Skipping row {idx}: Missing title or description")
@@ -98,7 +92,7 @@ def push_articles_to_db(df: pd.DataFrame):
                 print(f"✅ Inserted {len(article_topic_pairs)} articles successfully.")
                 
                 # --- VALIDATION CHECK ---
-                expected_count = len(articles_df)
+                expected_count = len(df)
                 actual_count = len(article_topic_pairs)
                 if actual_count != expected_count:
                     print(f"⚠️ Warning: Expected {expected_count} articles, but inserted {actual_count}")
@@ -110,7 +104,7 @@ def push_articles_to_db(df: pd.DataFrame):
                     print(f"\nSample of inserted articles:")
                     for i in range(min(3, len(article_topic_pairs))):
                         article_id, topics = article_topic_pairs[i]
-                        title = articles_df.iloc[i]['title'][:50] if i < len(articles_df) else 'N/A'
+                        title = df.iloc[i]['title'][:50] if i < len(df) else 'N/A'
                         print(f"  {i+1}. ID={article_id}, Topics={topics}, Title='{title}...'")
 
                 # --- 3. Prepare and insert sections using the coupled pairs ---
@@ -157,28 +151,42 @@ def push_articles_to_db(df: pd.DataFrame):
 # --- Main Execution Block ---
 if __name__ == '__main__':
     try:
-        # Steps 1-3 remain the same
-        print("--- [Step 1/4] Fetching and merging articles... ---")
+        print("=" * 70)
+        print("FULL PIPELINE: Scrape → Cluster → Synthesize → Push to Database")
+        print("=" * 70)
+        
+        # Step 1: Fetch and merge articles
+        print("\n--- [Step 1/5] Fetching and merging articles... ---")
         todays_articles_df = merge_and_preprocess_articles(filter_today=True)
         
         if not todays_articles_df.empty:
             print(f"Found {len(todays_articles_df)} articles to process")
             
-            print("--- [Step 2/4] Clustering articles... ---")
+            # Step 2: Cluster articles
+            print("\n--- [Step 2/5] Clustering articles... ---")
             clustered_df, unique_df = cluster_articles_with_dbscan(todays_articles_df)
-            
             print(f"Clustered articles: {len(clustered_df)}, Unique articles: {len(unique_df)}")
             
-            print("--- [Step 3/4] Generating final news dataset... ---")
+            # Step 3: Synthesize, summarize, and prepare for database
+            print("\n--- [Step 3/5] Generating final news dataset with embeddings... ---")
             final_df, processing_stats = generate_final_news_df_langchain(clustered_df, unique_df)
             
-            # Step 4 is now this script's main function
+            print(f"\n📊 Processing complete:")
+            print(f"  • Successful syntheses: {processing_stats['successful_synthesis']}")
+            print(f"  • Successful summaries: {processing_stats['successful_summary']}")
+            print(f"  • Total processed: {len(final_df)} articles")
+            
+            # Step 4: Push to database
             push_articles_to_db(final_df)
             
-            print("\n✅ Pipeline complete!")
+            print("\n" + "=" * 70)
+            print("✅ FULL PIPELINE COMPLETE!")
+            print("=" * 70)
         else:
             print("\n--- Pipeline finished: No articles found to process. ---")
             
     except Exception as e:
         print(f"\n❌ Pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise
